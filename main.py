@@ -1,33 +1,128 @@
 import argparse
+import base64
+import hashlib
+import io
+import json
+from contextlib import redirect_stdout
+from pathlib import Path
+
+import requests
 from util import extract_public_key, verify_artifact_signature
-from merkle_proof import DefaultHasher, verify_consistency, verify_inclusion, compute_leaf_hash
+from merkle_proof import DefaultHasher, RootMismatchError, verify_consistency, verify_inclusion, compute_leaf_hash
 
 def get_log_entry(log_index, debug=False):
-    # TODO: verify that log index value is sane
-    pass
+    if log_index < 0:
+        raise ValueError("Log index must be non-negative")
+
+    response = requests.get(
+        "https://rekor.sigstore.dev/api/v1/log/entries",
+        params={"logIndex": log_index},
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    entries = response.json()
+    if len(entries) != 1:
+        raise ValueError("Expected exactly one log entry")
+
+    return next(iter(entries.values()))
 
 def get_verification_proof(log_index, debug=False):
-    # TODO: verify that log index value is sane
-    pass
+    entry = get_log_entry(log_index, debug)
+    return entry["verification"]["inclusionProof"]
 
 def inclusion(log_index, artifact_filepath, debug=False):
-    # TODO::
-    # verify that log index and artifact filepath values are sane
-    # extract_public_key(certificate)
-    # verify_artifact_signature(signature, public_key, artifact_filepath)
-    # get_verification_proof(log_index)
-    # verify_inclusion(DefaultHasher, index, tree_size, leaf_hash, hashes, root_hash)
-    pass
+    artifact = Path(artifact_filepath)
+    if not artifact.is_file():
+        raise ValueError("Artifact must be an existing file")
+
+    entry = get_log_entry(log_index, debug)
+    body = json.loads(base64.b64decode(entry["body"], validate=True))
+    recorded_hash = body["spec"]["data"]["hash"]
+    if recorded_hash["algorithm"] != "sha256":
+        raise ValueError("Expected a SHA-256 artifact hash")
+    if hashlib.sha256(artifact.read_bytes()).hexdigest() != recorded_hash["value"]:
+        raise ValueError("Artifact hash does not match the Rekor record")
+
+    signature_data = body["spec"]["signature"]
+    signature = base64.b64decode(signature_data["content"], validate=True)
+    certificate = base64.b64decode(signature_data["publicKey"]["content"], validate=True)
+    public_key = extract_public_key(certificate)
+
+    # The supplied helper prints failures instead of raising them.
+    # Capture its diagnostics so a failed signature cannot report success.
+    diagnostics = io.StringIO()
+    with redirect_stdout(diagnostics):
+        verify_artifact_signature(signature, public_key, artifact_filepath)
+    if diagnostics.getvalue():
+        raise ValueError(diagnostics.getvalue().strip())
+    print("Artifact signature is valid")
+
+    proof = entry["verification"]["inclusionProof"]
+    verify_inclusion(
+        DefaultHasher,
+        proof["logIndex"],
+        proof["treeSize"],
+        compute_leaf_hash(entry["body"]),
+        proof["hashes"],
+        proof["rootHash"],
+        debug=debug,
+    )
+    print("Inclusion proof is valid")
+    print("Inclusion verification successful")
 
 def get_latest_checkpoint(debug=False):
-    # TODO: Fetch the latest checkpoint from rekor
-    pass
+    response = requests.get("https://rekor.sigstore.dev/api/v1/log", timeout=30)
+    response.raise_for_status()
+    return response.json()
 
 def consistency(prev_checkpoint, debug=False):
-    # TODO: 
-    # verify that prev checkpoint is not empty
-    # get_latest_checkpoint()
-    pass
+    if not prev_checkpoint:
+        raise ValueError("An older checkpoint is required")
+    tree_id = str(prev_checkpoint["treeID"])
+    old_size = prev_checkpoint["treeSize"]
+    old_root = prev_checkpoint["rootHash"]
+    if not tree_id.isdigit():
+        raise ValueError("Tree ID must contain only digits")
+    if old_size < 1:
+        raise ValueError("Older tree size must be positive")
+    if len(bytes.fromhex(old_root)) != DefaultHasher.size():
+        raise ValueError("Root hash must be a 32-byte hexadecimal SHA-256 hash")
+
+    log_info = get_latest_checkpoint(debug)
+    # Proofs must compare two checkpoints of the same tree, even after rotation.
+    trees = [log_info, *log_info.get("inactiveShards", [])]
+    latest = next((tree for tree in trees if str(tree["treeID"]) == tree_id), None)
+    if latest is None:
+        raise ValueError("Rekor did not return a checkpoint for the supplied tree ID")
+    new_size = latest["treeSize"]
+    if old_size > new_size:
+        raise ValueError("Older tree size exceeds the latest tree size")
+    if old_size == new_size:
+        if bytes.fromhex(old_root) != bytes.fromhex(latest["rootHash"]):
+            raise ValueError("Equal tree sizes have different root hashes")
+        raise ValueError("The tree has not grown; retry later with distinct checkpoints")
+
+    response = requests.get(
+        "https://rekor.sigstore.dev/api/v1/log/proof",
+        params={"firstSize": old_size, "lastSize": new_size, "treeID": tree_id},
+        timeout=30,
+    )
+    response.raise_for_status()
+    proof = response.json()
+    verify_consistency(
+        DefaultHasher,
+        old_size,
+        new_size,
+        proof["hashes"],
+        old_root,
+        latest["rootHash"],
+    )
+    print(f"Tree ID: {tree_id}")
+    print(f"Older tree size: {old_size}")
+    print(f"Latest tree size: {new_size}")
+    print(f"New entries: {new_size - old_size}")
+    print("Consistency verification successful")
 
 def main():
     debug = False
@@ -59,29 +154,43 @@ def main():
         debug = True
         print("enabled debug mode")
     if args.checkpoint:
-        # get and print latest checkpoint from server
-        # if debug is enabled, store it in a file checkpoint.json
-        checkpoint = get_latest_checkpoint(debug)
-        print(json.dumps(checkpoint, indent=4))
-    if args.inclusion:
-        inclusion(args.inclusion, args.artifact, debug)
+        try:
+            checkpoint = get_latest_checkpoint(debug)
+            summary = {
+                key: checkpoint[key]
+                for key in ("treeID", "treeSize", "rootHash")
+            }
+            Path("checkpoint.json").write_text(
+                json.dumps(checkpoint, indent=4) + "\n", encoding="utf-8"
+            )
+        except (ValueError, KeyError, OSError, requests.RequestException) as error:
+            parser.exit(1, f"Checkpoint fetch failed: {error}\n")
+        print(json.dumps(summary, indent=4))
+        print("Saved full checkpoint to checkpoint.json")
+    if args.inclusion is not None:
+        if not args.artifact:
+            parser.error("--inclusion requires --artifact")
+        try:
+            inclusion(args.inclusion, args.artifact, debug)
+        except (ValueError, KeyError, OSError, requests.RequestException, RootMismatchError) as error:
+            parser.exit(1, f"Inclusion verification failed: {error}\n")
     if args.consistency:
         if not args.tree_id:
-            print("please specify tree id for prev checkpoint")
-            return
-        if not args.tree_size:
-            print("please specify tree size for prev checkpoint")
-            return
+            parser.error("--consistency requires --tree-id")
+        if args.tree_size is None:
+            parser.error("--consistency requires --tree-size")
         if not args.root_hash:
-            print("please specify root hash for prev checkpoint")
-            return
+            parser.error("--consistency requires --root-hash")
 
         prev_checkpoint = {}
         prev_checkpoint["treeID"] = args.tree_id
         prev_checkpoint["treeSize"] = args.tree_size
         prev_checkpoint["rootHash"] = args.root_hash
 
-        consistency(prev_checkpoint, debug)
+        try:
+            consistency(prev_checkpoint, debug)
+        except (ValueError, KeyError, OSError, requests.RequestException, RootMismatchError) as error:
+            parser.exit(1, f"Consistency verification failed: {error}\n")
 
 if __name__ == "__main__":
     main()

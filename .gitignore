@@ -1,1 +1,7 @@
 __pycache__/
+.venv/
+*.pyc
+.DS_Store
+output/
+tmp/
+*.zip

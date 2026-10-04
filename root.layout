@@ -1,0 +1,102 @@
+{
+  "signatures": [
+    {
+      "keyid": "LAYOUTOWNER_KEYID_PLACEHOLDER",
+      "sig": "LAYOUT_SIGNATURE_PLACEHOLDER"
+    }
+  ],
+  "signed": {
+    "_type": "layout",
+    "expires": "2026-12-31T23:59:59Z",
+    "readme": "Supply chain layout for artifact.md (SSCS A1, Fall 2026). Pipeline: checkout -> create-artifact (python3 scripts/create_artifact.py) -> sign, matching the Setup section of the assignment. Paths are relative to the repository root. The developer performs checkout and create-artifact; the release manager performs sign. The layout is signed by a separate, offline project-owner key that is NOT a functionary.",
+    "keys": {
+      "aa11_developer_keyid": {
+        "keytype": "ed25519",
+        "scheme": "ed25519",
+        "keyid": "aa11_developer_keyid",
+        "keyid_hash_algorithms": ["sha256", "sha512"],
+        "keyval": { "public": "DEVELOPER_ED25519_PUBLIC_KEY_HEX" }
+      },
+      "dd44_release_manager_keyid": {
+        "keytype": "ed25519",
+        "scheme": "ed25519",
+        "keyid": "dd44_release_manager_keyid",
+        "keyid_hash_algorithms": ["sha256", "sha512"],
+        "keyval": { "public": "RELEASE_MANAGER_ED25519_PUBLIC_KEY_HEX" }
+      }
+    },
+    "steps": [
+      {
+        "_type": "step",
+        "name": "checkout",
+        "expected_command": ["git", "clone", "https://github.com/stupendoussuperpowers/python-rekor-monitor-template.git"],
+        "expected_materials": [
+          ["DISALLOW", "*"]
+        ],
+        "expected_products": [
+          ["CREATE", "README.md"],
+          ["CREATE", ".gitignore"],
+          ["CREATE", "main.py"],
+          ["CREATE", "util.py"],
+          ["CREATE", "merkle_proof.py"],
+          ["CREATE", "scripts/create_artifact.py"],
+          ["DISALLOW", "*"]
+        ],
+        "pubkeys": ["aa11_developer_keyid"],
+        "threshold": 1
+      },
+      {
+        "_type": "step",
+        "name": "create-artifact",
+        "expected_command": ["python3", "scripts/create_artifact.py", "YOURNETID"],
+        "expected_materials": [
+          ["MATCH", "*", "WITH", "PRODUCTS", "FROM", "checkout"],
+          ["DISALLOW", "*"]
+        ],
+        "expected_products": [
+          ["CREATE", "artifact.md"],
+          ["MATCH", "*", "WITH", "PRODUCTS", "FROM", "checkout"],
+          ["DISALLOW", "*"]
+        ],
+        "pubkeys": ["aa11_developer_keyid"],
+        "threshold": 1
+      },
+      {
+        "_type": "step",
+        "name": "sign",
+        "expected_command": ["cosign", "sign-blob", "artifact.md", "--bundle", "artifact.bundle"],
+        "expected_materials": [
+          ["MATCH", "artifact.md", "WITH", "PRODUCTS", "FROM", "create-artifact"],
+          ["MATCH", "*", "WITH", "PRODUCTS", "FROM", "checkout"],
+          ["DISALLOW", "*"]
+        ],
+        "expected_products": [
+          ["CREATE", "artifact.bundle"],
+          ["MATCH", "artifact.md", "WITH", "PRODUCTS", "FROM", "create-artifact"],
+          ["MATCH", "*", "WITH", "PRODUCTS", "FROM", "checkout"],
+          ["DISALLOW", "*"]
+        ],
+        "pubkeys": ["dd44_release_manager_keyid"],
+        "threshold": 1
+      }
+    ],
+    "inspect": [
+      {
+        "_type": "inspection",
+        "name": "verify-delivered-artifact",
+        "run": ["sh", "-c", "head -n 1 artifact.md | grep -qE '^[a-z]+[0-9]+$'"],
+        "expected_materials": [
+          ["MATCH", "artifact.md", "WITH", "PRODUCTS", "FROM", "sign"],
+          ["MATCH", "artifact.bundle", "WITH", "PRODUCTS", "FROM", "sign"],
+          ["ALLOW", "root.layout"],
+          ["ALLOW", "*.link"],
+          ["ALLOW", "*.pub"],
+          ["DISALLOW", "*"]
+        ],
+        "expected_products": [
+          ["MATCH", "*", "WITH", "MATERIALS", "FROM", "verify-delivered-artifact"]
+        ]
+      }
+    ]
+  }
+}
