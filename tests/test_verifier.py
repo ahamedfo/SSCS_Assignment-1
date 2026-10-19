@@ -136,7 +136,7 @@ def test_checkpoint_cli_saves_full_response(monkeypatch, tmp_path, capsys):
     get = respond(monkeypatch, checkpoint)
     monkeypatch.chdir(tmp_path)
     invoke(monkeypatch, "-c", "-d")
-    assert json.loads((tmp_path / "checkpoint.json").read_text()) == checkpoint
+    assert json.loads((tmp_path / "checkpoint-1-2.json").read_text()) == checkpoint
     assert "Saved full checkpoint" in capsys.readouterr().out
     get.assert_called_once_with("https://rekor.sigstore.dev/api/v1/log", timeout=30)
 
@@ -463,3 +463,75 @@ def test_cli_requires_one_action_before_any_side_effect(tmp_path, args):
     assert expected in result.stderr
     assert not list(tmp_path.glob("checkpoint*.json"))
     assert "verification successful" not in result.stdout.lower()
+
+
+def test_cli_keeps_old_checkpoint_when_fetching_new_snapshots(tmp_path):
+    legacy = tmp_path / "checkpoint.json"
+    legacy.write_text('{"saved": "older checkpoint"}\n')
+    original = legacy.read_bytes()
+    for size in [1, 2]:
+        checkpoint = {"treeID": "1", "treeSize": size, "rootHash": "11" * 32}
+        result = run_cli_with_responses(
+            tmp_path,
+            ["-c"],
+            {"https://rekor.sigstore.dev/api/v1/log": checkpoint},
+        )
+        assert result.returncode == 0, result.stderr
+        assert legacy.read_bytes() == original
+        saved = tmp_path / f"checkpoint-1-{size}.json"
+        assert json.loads(saved.read_text()) == checkpoint
+
+
+@pytest.mark.parametrize("custom", [False, True])
+def test_cli_refuses_to_overwrite_checkpoint(tmp_path, custom):
+    checkpoint = {"treeID": "1", "treeSize": 2, "rootHash": "11" * 32}
+    filename = "chosen.json" if custom else "checkpoint-1-2.json"
+    existing = tmp_path / filename
+    existing.write_text("previous snapshot\n")
+    args = ["-c", "--output", filename] if custom else ["-c"]
+    result = run_cli_with_responses(
+        tmp_path,
+        args,
+        {"https://rekor.sigstore.dev/api/v1/log": checkpoint},
+    )
+    assert result.returncode == 1
+    assert "already exists" in result.stderr
+    assert existing.read_text() == "previous snapshot\n"
+
+
+def test_cli_saves_checkpoint_to_custom_output(tmp_path):
+    checkpoint = {"treeID": "1", "treeSize": 2, "rootHash": "11" * 32}
+    result = run_cli_with_responses(
+        tmp_path,
+        ["-c", "--output", "chosen.json"],
+        {"https://rekor.sigstore.dev/api/v1/log": checkpoint},
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path / "chosen.json").read_text()) == checkpoint
+
+
+@pytest.mark.parametrize(
+    "checkpoint",
+    [
+        {"treeID": "../../elsewhere", "treeSize": 1, "rootHash": "11" * 32},
+        {"treeID": "1", "treeSize": "../../elsewhere", "rootHash": "11" * 32},
+    ],
+)
+def test_cli_rejects_unsafe_checkpoint_filename_fields(tmp_path, checkpoint):
+    result = run_cli_with_responses(
+        tmp_path,
+        ["-c"],
+        {"https://rekor.sigstore.dev/api/v1/log": checkpoint},
+    )
+    assert result.returncode == 1
+    assert not list(tmp_path.glob("checkpoint*.json"))
+
+
+def test_cli_rejects_output_without_checkpoint_action(tmp_path):
+    result = run_cli_with_responses(
+        tmp_path,
+        ["--inclusion", "0", "--output", "chosen.json"],
+        {},
+    )
+    assert result.returncode == 2
+    assert "--output requires --checkpoint" in result.stderr
