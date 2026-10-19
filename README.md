@@ -37,8 +37,13 @@ It exits with an error if a check fails.
 poetry run python main.py -c
 ```
 
-This prints the active tree ID, size, and root hash and saves the full response to `checkpoint.json`.
-Running it again replaces that file with a newer snapshot.
+This prints the active tree ID, size, and root hash and saves the full response to `checkpoint-<treeID>-<treeSize>.json`.
+New checkpoints use different filenames as the tree grows, preserving the older snapshots needed for consistency checks.
+Existing files are never overwritten, including the Assignment 1 `checkpoint.json`.
+Choose another new filename with `poetry run python main.py -c --output checkpoints-today.json`.
+If the same checkpoint has already been saved, choose a new output path or reuse the existing file.
+Use the tree ID, size, and root hash from the older saved file as the `--consistency` arguments.
+Consistency verification does not write to the saved checkpoint files.
 
 ## Verify consistency
 
