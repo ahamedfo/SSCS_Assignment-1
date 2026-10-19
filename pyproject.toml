@@ -1,0 +1,47 @@
+[tool.poetry]
+name = "rekor-verifier"
+version = "0.1.0"
+description = "Verify artifact signatures and Rekor Merkle proofs"
+authors = ["Ahamed Fofana <af4074@nyu.edu>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+requests = "2.34.2"
+cryptography = "50.0.2"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "*"
+mypy = "*"
+types-requests = "*"
+bandit = "*"
+pytest = "*"
+pytest-cov = "*"
+pre-commit = "*"
+radon = "*"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+disallow_untyped_defs = true
+
+[tool.bandit]
+exclude_dirs = [".venv", "tests", ".git"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--cov=main --cov=merkle_proof --cov=util --cov=scripts --cov-report=term-missing --cov-report=html --cov-fail-under=75"
+
+[tool.coverage.run]
+relative_files = true
+
+[tool.coverage.report]
+show_missing = true

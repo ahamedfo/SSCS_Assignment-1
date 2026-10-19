@@ -5,12 +5,21 @@ import io
 import json
 from contextlib import redirect_stdout
 from pathlib import Path
+from typing import Any
 
 import requests
-from util import extract_public_key, verify_artifact_signature
-from merkle_proof import DefaultHasher, RootMismatchError, verify_consistency, verify_inclusion, compute_leaf_hash
 
-def get_log_entry(log_index, debug=False):
+from merkle_proof import (
+    DefaultHasher,
+    RootMismatchError,
+    compute_leaf_hash,
+    verify_consistency,
+    verify_inclusion,
+)
+from util import extract_public_key, verify_artifact_signature
+
+
+def get_log_entry(log_index: int, debug: bool = False) -> dict[str, Any]:
     if log_index < 0:
         raise ValueError("Log index must be non-negative")
 
@@ -25,13 +34,18 @@ def get_log_entry(log_index, debug=False):
     if len(entries) != 1:
         raise ValueError("Expected exactly one log entry")
 
-    return next(iter(entries.values()))
+    entry = next(iter(entries.values()))
+    if entry["logIndex"] != log_index:
+        raise ValueError("Returned log index does not match the requested index")
+    return entry
 
-def get_verification_proof(log_index, debug=False):
+
+def get_verification_proof(log_index: int, debug: bool = False) -> dict[str, Any]:
     entry = get_log_entry(log_index, debug)
     return entry["verification"]["inclusionProof"]
 
-def inclusion(log_index, artifact_filepath, debug=False):
+
+def inclusion(log_index: int, artifact_filepath: str, debug: bool = False) -> None:
     artifact = Path(artifact_filepath)
     if not artifact.is_file():
         raise ValueError("Artifact must be an existing file")
@@ -46,7 +60,9 @@ def inclusion(log_index, artifact_filepath, debug=False):
 
     signature_data = body["spec"]["signature"]
     signature = base64.b64decode(signature_data["content"], validate=True)
-    certificate = base64.b64decode(signature_data["publicKey"]["content"], validate=True)
+    certificate = base64.b64decode(
+        signature_data["publicKey"]["content"], validate=True
+    )
     public_key = extract_public_key(certificate)
 
     # The supplied helper prints failures instead of raising them.
@@ -71,12 +87,14 @@ def inclusion(log_index, artifact_filepath, debug=False):
     print("Inclusion proof is valid")
     print("Inclusion verification successful")
 
-def get_latest_checkpoint(debug=False):
+
+def get_latest_checkpoint(debug: bool = False) -> dict[str, Any]:
     response = requests.get("https://rekor.sigstore.dev/api/v1/log", timeout=30)
     response.raise_for_status()
     return response.json()
 
-def consistency(prev_checkpoint, debug=False):
+
+def consistency(prev_checkpoint: dict[str, Any], debug: bool = False) -> None:
     if not prev_checkpoint:
         raise ValueError("An older checkpoint is required")
     tree_id = str(prev_checkpoint["treeID"])
@@ -101,7 +119,9 @@ def consistency(prev_checkpoint, debug=False):
     if old_size == new_size:
         if bytes.fromhex(old_root) != bytes.fromhex(latest["rootHash"]):
             raise ValueError("Equal tree sizes have different root hashes")
-        raise ValueError("The tree has not grown; retry later with distinct checkpoints")
+        raise ValueError(
+            "The tree has not grown; retry later with distinct checkpoints"
+        )
 
     response = requests.get(
         "https://rekor.sigstore.dev/api/v1/log/proof",
@@ -124,32 +144,58 @@ def consistency(prev_checkpoint, debug=False):
     print(f"New entries: {new_size - old_size}")
     print("Consistency verification successful")
 
-def main():
+
+def main() -> None:
     debug = False
     parser = argparse.ArgumentParser(description="Rekor Verifier")
-    parser.add_argument('-d', '--debug', help='Debug mode',
-                        required=False, action='store_true') # Default false
-    parser.add_argument('-c', '--checkpoint', help='Obtain latest checkpoint\
-                        from Rekor Server public instance',
-                        required=False, action='store_true')
-    parser.add_argument('--inclusion', help='Verify inclusion of an\
+    parser.add_argument(
+        "-d", "--debug", help="Debug mode", required=False, action="store_true"
+    )  # Default false
+    actions = parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument(
+        "-c",
+        "--checkpoint",
+        help="Obtain latest checkpoint\
+                        from Rekor Server public instance",
+        required=False,
+        action="store_true",
+    )
+    actions.add_argument(
+        "--inclusion",
+        help="Verify inclusion of an\
                         entry in the Rekor Transparency Log using log index\
                         and artifact filename.\
-                        Usage: --inclusion 126574567',
-                        required=False, type=int)
-    parser.add_argument('--artifact', help='Artifact filepath for verifying\
-                        signature',
-                        required=False)
-    parser.add_argument('--consistency', help='Verify consistency of a given\
-                        checkpoint with the latest checkpoint.',
-                        action='store_true')
-    parser.add_argument('--tree-id', help='Tree ID for consistency proof',
-                        required=False)
-    parser.add_argument('--tree-size', help='Tree size for consistency proof',
-                        required=False, type=int)
-    parser.add_argument('--root-hash', help='Root hash for consistency proof',
-                        required=False)
+                        Usage: --inclusion 126574567",
+        required=False,
+        type=int,
+    )
+    parser.add_argument(
+        "--artifact",
+        help="Artifact filepath for verifying\
+                        signature",
+        required=False,
+    )
+    actions.add_argument(
+        "--consistency",
+        help="Verify consistency of a given\
+                        checkpoint with the latest checkpoint.",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--tree-id", help="Tree ID for consistency proof", required=False
+    )
+    parser.add_argument(
+        "--tree-size", help="Tree size for consistency proof", required=False, type=int
+    )
+    parser.add_argument(
+        "--root-hash", help="Root hash for consistency proof", required=False
+    )
+    parser.add_argument(
+        "--output", type=Path, help="Save a checkpoint to a new file at this path"
+    )
     args = parser.parse_args()
+    if args.output is not None and not args.checkpoint:
+        parser.error("--output requires --checkpoint")
     if args.debug:
         debug = True
         print("enabled debug mode")
@@ -157,24 +203,43 @@ def main():
         try:
             checkpoint = get_latest_checkpoint(debug)
             summary = {
-                key: checkpoint[key]
-                for key in ("treeID", "treeSize", "rootHash")
+                key: checkpoint[key] for key in ("treeID", "treeSize", "rootHash")
             }
-            Path("checkpoint.json").write_text(
-                json.dumps(checkpoint, indent=4) + "\n", encoding="utf-8"
-            )
+            tree_id = str(checkpoint["treeID"])
+            tree_size = checkpoint["treeSize"]
+            if not tree_id.isascii() or not tree_id.isdigit():
+                raise ValueError("Checkpoint tree ID must contain only ASCII digits")
+            if type(tree_size) is not int or tree_size <= 0:
+                raise ValueError("Checkpoint tree size must be a positive integer")
+            destination = args.output or Path(f"checkpoint-{tree_id}-{tree_size}.json")
+            contents = json.dumps(checkpoint, indent=4) + "\n"
+            try:
+                with destination.open("x", encoding="utf-8") as output:
+                    output.write(contents)
+            except FileExistsError:
+                parser.exit(
+                    1,
+                    f"Checkpoint file already exists: {destination}; "
+                    "use --output with a new path.\n",
+                )
         except (ValueError, KeyError, OSError, requests.RequestException) as error:
             parser.exit(1, f"Checkpoint fetch failed: {error}\n")
         print(json.dumps(summary, indent=4))
-        print("Saved full checkpoint to checkpoint.json")
-    if args.inclusion is not None:
+        print(f"Saved full checkpoint to {destination}")
+    elif args.inclusion is not None:
         if not args.artifact:
             parser.error("--inclusion requires --artifact")
         try:
             inclusion(args.inclusion, args.artifact, debug)
-        except (ValueError, KeyError, OSError, requests.RequestException, RootMismatchError) as error:
+        except (
+            ValueError,
+            KeyError,
+            OSError,
+            requests.RequestException,
+            RootMismatchError,
+        ) as error:
             parser.exit(1, f"Inclusion verification failed: {error}\n")
-    if args.consistency:
+    elif args.consistency:
         if not args.tree_id:
             parser.error("--consistency requires --tree-id")
         if args.tree_size is None:
@@ -189,8 +254,15 @@ def main():
 
         try:
             consistency(prev_checkpoint, debug)
-        except (ValueError, KeyError, OSError, requests.RequestException, RootMismatchError) as error:
+        except (
+            ValueError,
+            KeyError,
+            OSError,
+            requests.RequestException,
+            RootMismatchError,
+        ) as error:
             parser.exit(1, f"Consistency verification failed: {error}\n")
+
 
 if __name__ == "__main__":
     main()

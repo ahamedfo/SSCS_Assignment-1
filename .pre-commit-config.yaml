@@ -1,0 +1,10 @@
+repos:
+  - repo: local
+    hooks:
+      - id: trufflehog
+        name: TruffleHog (staged changes only)
+        entry: trufflehog git file://. --since-commit HEAD --branch HEAD --no-verification --results=verified,unknown,unverified --fail --fail-on-scan-errors --no-update --trust-local-git-config
+        language: system
+        stages: [pre-commit]
+        pass_filenames: false
+        always_run: true
