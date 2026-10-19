@@ -435,3 +435,31 @@ def test_cli_rejects_returned_entry_with_wrong_index(tmp_path, signed_entry):
     assert result.returncode == 1
     assert "does not match the requested index" in result.stderr
     assert "verification successful" not in result.stdout.lower()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        ["-c", "--inclusion", "0"],
+        ["-c", "--consistency"],
+        ["--inclusion", "0", "--consistency"],
+    ],
+)
+def test_cli_requires_one_action_before_any_side_effect(tmp_path, args):
+    result = run_cli_with_responses(
+        tmp_path,
+        args,
+        {
+            "https://rekor.sigstore.dev/api/v1/log": {
+                "treeID": "1",
+                "treeSize": 1,
+                "rootHash": "11" * 32,
+            }
+        },
+    )
+    assert result.returncode == 2
+    expected = "required" if not args else "not allowed"
+    assert expected in result.stderr
+    assert not list(tmp_path.glob("checkpoint*.json"))
+    assert "verification successful" not in result.stdout.lower()

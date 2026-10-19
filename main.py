@@ -151,7 +151,8 @@ def main() -> None:
     parser.add_argument(
         "-d", "--debug", help="Debug mode", required=False, action="store_true"
     )  # Default false
-    parser.add_argument(
+    actions = parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument(
         "-c",
         "--checkpoint",
         help="Obtain latest checkpoint\
@@ -159,7 +160,7 @@ def main() -> None:
         required=False,
         action="store_true",
     )
-    parser.add_argument(
+    actions.add_argument(
         "--inclusion",
         help="Verify inclusion of an\
                         entry in the Rekor Transparency Log using log index\
@@ -174,7 +175,7 @@ def main() -> None:
                         signature",
         required=False,
     )
-    parser.add_argument(
+    actions.add_argument(
         "--consistency",
         help="Verify consistency of a given\
                         checkpoint with the latest checkpoint.",
@@ -206,7 +207,7 @@ def main() -> None:
             parser.exit(1, f"Checkpoint fetch failed: {error}\n")
         print(json.dumps(summary, indent=4))
         print("Saved full checkpoint to checkpoint.json")
-    if args.inclusion is not None:
+    elif args.inclusion is not None:
         if not args.artifact:
             parser.error("--inclusion requires --artifact")
         try:
@@ -219,7 +220,7 @@ def main() -> None:
             RootMismatchError,
         ) as error:
             parser.exit(1, f"Inclusion verification failed: {error}\n")
-    if args.consistency:
+    elif args.consistency:
         if not args.tree_id:
             parser.error("--consistency requires --tree-id")
         if args.tree_size is None:
