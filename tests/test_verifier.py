@@ -70,6 +70,7 @@ def signed_entry(tmp_path):
     }
     encoded = base64.b64encode(json.dumps(body).encode()).decode()
     entry = {
+        "logIndex": 0,
         "body": encoded,
         "verification": {
             "inclusionProof": {
@@ -385,3 +386,52 @@ def test_main_module_entrypoint_help(monkeypatch, capsys):
         runpy.run_path(str(ROOT / "main.py"), run_name="__main__")
     assert raised.value.code == 0
     assert "Rekor Verifier" in capsys.readouterr().out
+
+
+def run_cli_with_responses(tmp_path, args, responses):
+    """Run the actual CLI with controlled HTTP replies and an isolated directory."""
+    import os
+
+    harness = tmp_path / "http_stub"
+    harness.mkdir(exist_ok=True)
+    payload = harness / "responses.json"
+    payload.write_text(json.dumps(responses))
+    (harness / "sitecustomize.py").write_text(
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "import requests\n"
+        "class Response:\n"
+        "    def __init__(self, url): self.url = url\n"
+        "    def raise_for_status(self): pass\n"
+        "    def json(self):\n"
+        '        return json.loads(Path(os.environ["REVIEW_HTTP_RESPONSES"]).read_text())[self.url]\n'
+        "def get(url, **kwargs): return Response(url)\n"
+        "requests.get = get\n"
+    )
+    env = os.environ.copy()
+    env.update(
+        PYTHONPATH=str(harness),
+        REVIEW_HTTP_RESPONSES=str(payload),
+        PYTHONDONTWRITEBYTECODE="1",
+    )
+    return subprocess.run(
+        [sys.executable, str(ROOT / "main.py"), *args],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+def test_cli_rejects_returned_entry_with_wrong_index(tmp_path, signed_entry):
+    artifact, entry = signed_entry
+    entry["logIndex"] = 1
+    result = run_cli_with_responses(
+        tmp_path,
+        ["--inclusion", "0", "--artifact", str(artifact)],
+        {"https://rekor.sigstore.dev/api/v1/log/entries": {"entry": entry}},
+    )
+    assert result.returncode == 1
+    assert "does not match the requested index" in result.stderr
+    assert "verification successful" not in result.stdout.lower()

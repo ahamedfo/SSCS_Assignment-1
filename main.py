@@ -34,7 +34,10 @@ def get_log_entry(log_index: int, debug: bool = False) -> dict[str, Any]:
     if len(entries) != 1:
         raise ValueError("Expected exactly one log entry")
 
-    return next(iter(entries.values()))
+    entry = next(iter(entries.values()))
+    if entry["logIndex"] != log_index:
+        raise ValueError("Returned log index does not match the requested index")
+    return entry
 
 
 def get_verification_proof(log_index: int, debug: bool = False) -> dict[str, Any]:
