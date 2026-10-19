@@ -34,7 +34,10 @@ def get_log_entry(log_index: int, debug: bool = False) -> dict[str, Any]:
     if len(entries) != 1:
         raise ValueError("Expected exactly one log entry")
 
-    return next(iter(entries.values()))
+    entry = next(iter(entries.values()))
+    if entry["logIndex"] != log_index:
+        raise ValueError("Returned log index does not match the requested index")
+    return entry
 
 
 def get_verification_proof(log_index: int, debug: bool = False) -> dict[str, Any]:
@@ -148,7 +151,8 @@ def main() -> None:
     parser.add_argument(
         "-d", "--debug", help="Debug mode", required=False, action="store_true"
     )  # Default false
-    parser.add_argument(
+    actions = parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument(
         "-c",
         "--checkpoint",
         help="Obtain latest checkpoint\
@@ -156,7 +160,7 @@ def main() -> None:
         required=False,
         action="store_true",
     )
-    parser.add_argument(
+    actions.add_argument(
         "--inclusion",
         help="Verify inclusion of an\
                         entry in the Rekor Transparency Log using log index\
@@ -171,7 +175,7 @@ def main() -> None:
                         signature",
         required=False,
     )
-    parser.add_argument(
+    actions.add_argument(
         "--consistency",
         help="Verify consistency of a given\
                         checkpoint with the latest checkpoint.",
@@ -186,7 +190,12 @@ def main() -> None:
     parser.add_argument(
         "--root-hash", help="Root hash for consistency proof", required=False
     )
+    parser.add_argument(
+        "--output", type=Path, help="Save a checkpoint to a new file at this path"
+    )
     args = parser.parse_args()
+    if args.output is not None and not args.checkpoint:
+        parser.error("--output requires --checkpoint")
     if args.debug:
         debug = True
         print("enabled debug mode")
@@ -196,14 +205,28 @@ def main() -> None:
             summary = {
                 key: checkpoint[key] for key in ("treeID", "treeSize", "rootHash")
             }
-            Path("checkpoint.json").write_text(
-                json.dumps(checkpoint, indent=4) + "\n", encoding="utf-8"
-            )
+            tree_id = str(checkpoint["treeID"])
+            tree_size = checkpoint["treeSize"]
+            if not tree_id.isascii() or not tree_id.isdigit():
+                raise ValueError("Checkpoint tree ID must contain only ASCII digits")
+            if type(tree_size) is not int or tree_size <= 0:
+                raise ValueError("Checkpoint tree size must be a positive integer")
+            destination = args.output or Path(f"checkpoint-{tree_id}-{tree_size}.json")
+            contents = json.dumps(checkpoint, indent=4) + "\n"
+            try:
+                with destination.open("x", encoding="utf-8") as output:
+                    output.write(contents)
+            except FileExistsError:
+                parser.exit(
+                    1,
+                    f"Checkpoint file already exists: {destination}; "
+                    "use --output with a new path.\n",
+                )
         except (ValueError, KeyError, OSError, requests.RequestException) as error:
             parser.exit(1, f"Checkpoint fetch failed: {error}\n")
         print(json.dumps(summary, indent=4))
-        print("Saved full checkpoint to checkpoint.json")
-    if args.inclusion is not None:
+        print(f"Saved full checkpoint to {destination}")
+    elif args.inclusion is not None:
         if not args.artifact:
             parser.error("--inclusion requires --artifact")
         try:
@@ -216,7 +239,7 @@ def main() -> None:
             RootMismatchError,
         ) as error:
             parser.exit(1, f"Inclusion verification failed: {error}\n")
-    if args.consistency:
+    elif args.consistency:
         if not args.tree_id:
             parser.error("--consistency requires --tree-id")
         if args.tree_size is None:
